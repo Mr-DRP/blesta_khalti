@@ -1,0 +1,14 @@
+{
+	"version": "1.0.0",
+	"name": "Khalti.name",
+	"description": "Khalti.description",
+	"authors": [
+		{
+			"name": "RedoHost",
+			"url": "https://www.redohost.com"
+		}
+	],
+	"currencies": ["NPR"
+    ],
+	"signup_url": "https://khalti.com/"
+}
