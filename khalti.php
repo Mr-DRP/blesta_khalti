@@ -175,7 +175,11 @@ class Khalti extends NonmerchantGateway
              'product_name' => $options['description'],
              'product_id' => $invoice_amounts['0']['id'],
              'callback_url' => Configure::get('Blesta.gw_callback_url') . Configure::get('Blesta.company_id') . '/khalti/',
-             'return_url' => $options['return_url']
+             'return_url' => $options['return_url'],
+             'metadata' => (object)[
+                'client_id' => $contact_info['client_id'],
+                'invoices' => $this->serializeInvoices($invoice_amounts)
+            ],
          ];
  
          // Get the url to redirect the client to
@@ -221,25 +225,12 @@ class Khalti extends NonmerchantGateway
      */
     public function validate(array $get, array $post)
     {
-
         $callback_data = json_decode(@file_get_contents("php://input"));
-
-        // Log request received
-        $this->log(
-            $this->ifSet($_SERVER['REQUEST_URI']),
-            json_encode(
-                $callback_data,
-                JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
-            ),
-            'output',
-            true
-        );
 
         $args = http_build_query(array(
             'token' => $callback_data->{'token'},
             'amount'  => $callback_data->{'amount'}
             ));
-            
             $url = "https://khalti.com/api/payment/verify/";
             
             # Make the call using API.
@@ -258,15 +249,10 @@ class Khalti extends NonmerchantGateway
             // Response
             $response = curl_exec($ch);
             
-            $this->log(
-                $this->ifSet($_SERVER['REQUEST_URI']),
-                serialize($response),
-                'output',
-                json_last_error() === JSON_ERROR_NONE
-            );
             curl_close($ch);
-
-            switch ($response->state->name) {
+            $vars = json_decode($response);
+            
+            switch ($vars->state->name) {
                 case 'Completed':
                     $status = 'approved';
                     break;
@@ -275,16 +261,31 @@ class Khalti extends NonmerchantGateway
                     break;
             }
             // Force 2-decimal places only
-            $amount = number_format(($response->amount / 100), 2, '.', '');
-
+            $amount = number_format(($vars->amount / 100), 2, '.', '');
+            $currency = 'NPR';
+            $this->log(
+                'validate1',
+                json_encode(
+                    [
+                        'client_id' => $callback_data->{'merchant_client'},
+                            'amount' => $this->ifSet($amount),
+                            'currency' => $this->ifSet($currency),
+                            'status' => $status,
+                            'transaction_id' => $this->ifSet($vars->idx),
+                            'invoices' => $this->unserializeInvoices($callback_data->{'merchant_invoice'})
+                    ],
+                    JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
+                ),
+                'output',
+                true
+            );
         return [
-            'client_id' => $client_id,
-            'amount' => $this->ifSet($amount),
-            'currency' => $this->ifSet($currency),
-            'status' => $status,
-            'reference_id' => $this->ifSet($vars->payload->payment->entity->email),
-            'transaction_id' => $this->ifSet($vars->payload->payment->entity->order_id),
-            'invoices' => $this->unserializeInvoices($this->ifSet($invoices))
+            'client_id' => $callback_data->{'merchant_client'},
+                'amount' => $this->ifSet($amount),
+                'currency' => $this->ifSet($currency),
+                'status' => $status,
+                'transaction_id' => $this->ifSet($vars->idx),
+                'invoices' => $this->unserializeInvoices($vars->meta->{'merchant_invoice'})
         ];
     }
 
@@ -307,84 +308,55 @@ class Khalti extends NonmerchantGateway
      *  - parent_transaction_id The ID returned by the gateway to identify this transaction's original transaction
      */
     public function success(array $get, array $post)
-    {
-        // Load library methods
-        Loader::load(dirname(__FILE__) . DS . 'lib' . DS . 'Razorpay.php');
-        $api = new Razorpay\Api\Api($this->meta['key_id'], $this->meta['key_secret']);
-
+    { 
         $client_id = $this->ifSet($get['client_id']);
 
-        // Fetch order
-        if (isset($post['razorpay_order_id'])) {
-            try {
-                $this->log($this->ifSet($_SERVER['REQUEST_URI']), serialize($post), 'input', true);
+            $url = "https://khalti.com/api/v2/merchant-transaction/".$get['idx']."/";
 
-                $order = $api->order->fetch($post['razorpay_order_id']);
+            # Make the call using API.
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 
-                // Log the API response
-                $this->log(
-                    $this->ifSet($_SERVER['REQUEST_URI']),
-                    serialize($order),
-                    'output',
-                    isset($order->id)
-                );
-            } catch (Razorpay\Api\Errors\Error $e) {
-                $this->Input->setErrors(
-                    ['error' => ['message' => $e->getMessage()]]
-                );
+            $headers = ['Authorization: Key '.$this->meta['secret_key']];
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 
-                return null;
+            // Response
+            $response = curl_exec($ch);
+            $status_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            $vars = json_decode($response);
+            
+            switch ($vars->state->name) {
+                case 'Completed':
+                    $status = 'approved';
+                    break;
+                default:
+                    $status = 'declined';
+                    break;
             }
-
             // Force 2-decimal places only
-            $amount = number_format(($order->amount / 100), 2, '.', '');
+            $amount = number_format(($vars->amount / 100), 2, '.', '');
+            $currency = 'NPR';
 
-            // Fetch order currency
-            $currency = $order->currency;
-
-            // Fetch serialized invoices
-            $invoices = $order->notes->invoice_amounts;
-        }
-
-        // Check if an error has been returned
-        if (isset($post['error'])) {
-            $this->Input->setErrors(
-                ['error' => ['message' => $this->ifSet($post['error']['description'])]]
-            );
-
-            // Log the API response
             $this->log(
-                $this->ifSet($_SERVER['REQUEST_URI']),
-                serialize($post),
+                'success2',
+                json_encode(
+                    $status,
+                    JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
+                ),
                 'output',
-                false
+                true
             );
-        }
-
-        // Validate order signature
-        $status = 'declined';
-
-        if (isset($post['razorpay_order_id'])) {
-            $signature = $api->utility->verifyPaymentSignature(
-                [
-                    'razorpay_signature' => $this->ifSet($post['razorpay_signature']),
-                    'razorpay_payment_id' => $this->ifSet($post['razorpay_payment_id']),
-                    'razorpay_order_id' => $this->ifSet($post['razorpay_order_id'])
-                ]
-            );
-
-            if ($signature) {
-                $status = 'approved';
-            }
-        }
 
         return [
             'client_id' => $client_id,
-            'amount' => $this->ifSet($amount),
-            'currency' => $this->ifSet($currency),
-            'invoices' => $this->unserializeInvoices($this->ifSet($invoices)),
-            'status' => $status,
-            'transaction_id' => $this->ifSet($post['razorpay_order_id'])
+                'amount' => $this->ifSet($amount),
+                'currency' => $this->ifSet($currency),
+                'status' => $status,
+                'transaction_id' => $this->ifSet($vars->idx),
+                'invoices' => $this->unserializeInvoices($vars->meta->merchant_invoice)
         ];
     }
 
@@ -448,5 +420,13 @@ class Khalti extends NonmerchantGateway
             $invoices[] = ['id' => $pairs[0], 'amount' => $pairs[1]];
         }
         return $invoices;
+    }
+
+    private function getApi($secret_key)
+    {
+        // Load library methods
+        Loader::load(dirname(__FILE__) . DS . 'lib' . DS . 'khaltiAPI.php');
+
+        return new KhaltiApi($secret_key);
     }
 }

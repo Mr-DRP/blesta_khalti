@@ -1,16 +1,15 @@
 <script src="https://khalti.com/static/khalti-checkout.js"></script>
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
 <button id="payment-button" class="btn btn-default" style="background-color: #773292; cursor: pointer; color: #fff;">Pay with Khalti</button>
-<?php var_dump($params); ?>
-    <!-- Place this where you need payment button -->
-    <!-- Paste this code anywhere in you body tag -->
+<?php $proid= isset($params['product_id']) ? $params['product_id'] : "credit"; ?>
     <script>
         var config = {
             "publicKey": "<?php echo $params['public_key']; ?>",
-            "productIdentity": "<?php echo $params['id']; ?>",
+            "productIdentity": "<?php echo $proid; ?>",
             "productName": "<?php echo $params['product_name']; ?>",
             "productUrl": "https://redohost.com/order/main/packages",
-            "merchant_client" : "<?php echo $params['client_id']; ?>" ,
+            "merchant_client" : "<?php echo $params['metadata']->client_id; ?>" ,
+            "merchant_invoice" : "<?php echo $params['metadata']->invoices; ?>",
            
             "eventHandler": {
                 onSuccess (payload) {
@@ -20,7 +19,7 @@
                     xhr.setRequestHeader("Content-Type", "application/json");
                     xhr.onreadystatechange = function () {
                         if (xhr.readyState === 4 && xhr.status === 200) {
-                            window.location = "<?php echo $params['return_url']; ?>";
+                            window.location = "<?php echo $params['return_url']."&idx="; ?>"+payload['idx'];
                         }
                     };
                     var data = JSON.stringify(payload);
